@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Generate Weekly Rota", layout="wide")
 st.title("Weekly Rota Generator")
-st.write("Batch allocate staff for performances based on availability and venue rules.")
+st.write("Batch allocate staff for performances based on availability, training, fairness, and optional equity balancing.")
 
 def load_json(filepath):
     if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
@@ -24,7 +24,6 @@ def save_rotas(new_rotas):
     
     new_show_ids = [r['show_id'] for r in new_rotas]
     filtered_rotas = [r for r in existing_rotas if r['show_id'] not in new_show_ids]
-    
     filtered_rotas.extend(new_rotas)
     
     with open(rotas_file, "w") as f:
@@ -45,26 +44,41 @@ if not staff_data or not availability_data:
 
 staff_dict = {s['name']: s for s in staff_data}
 
+# Map total available shifts per person for ratio calculations
+avail_totals = {}
+for entry in availability_data:
+    avail_totals[entry['employee']] = max(entry.get('total_available', 0), 1) # Avoid division by zero
+
 def clean_string(text):
     text = re.sub(r'[^\w\s]', '', str(text).lower())
     return " ".join(text.split())
 
-# Sort all shows chronologically by default
 shows_data.sort(key=lambda x: (x['date'], x['curtain_time']))
 
-st.write("### 1. Select Scheduling Scope")
-selection_mode = st.radio("Choose selection method:", ["By Date Range", "Select All Loaded Shows (" + str(len(shows_data)) + " total)"])
+st.write("### 1. Scheduling Scope & Fairness Settings")
+col_opt1, col_opt2 = st.columns(2)
+
+with col_opt1:
+    selection_mode = st.radio("Choose selection method:", ["By Date Range", "Select All Loaded Shows (" + str(len(shows_data)) + " total)"])
+
+with col_opt2:
+    st.write("### Advanced Optimization Toggle")
+    equalize_ratios = st.toggle(
+        "⚖️ Enable Equal Fulfillment Ratio Balancing", 
+        value=False,
+        help="When active, the engine dynamically prioritizes staff with lower fulfillment percentages to ensure equal workload ratios across the team."
+    )
 
 shows_in_batch = []
 
 if selection_mode == "By Date Range":
-    col1, col2 = st.columns(2)
+    d_col1, d_col2 = st.columns(2)
     min_date = datetime.strptime(shows_data[0]['date'], "%Y-%m-%d").date()
     max_date = datetime.strptime(shows_data[-1]['date'], "%Y-%m-%d").date()
     
-    with col1:
+    with d_col1:
         start_date = st.date_input("Start Date", value=min_date, min_value=min_date, max_value=max_date)
-    with col2:
+    with d_col2:
         end_date = st.date_input("End Date", value=max_date, min_value=min_date, max_value=max_date)
         
     shows_in_batch = [
@@ -86,7 +100,7 @@ with st.expander("🔍 View Selected Shows List"):
         st.write(f"- {s['date']} {s['curtain_time'][:5]} | **{s['show_name']}** ({s['venue']})")
 
 if st.button("🪄 Generate Batch Allocation", type="primary"):
-    with st.spinner("Processing batch allocation..."):
+    with st.spinner("Processing batch allocation and optimizing fairness..."):
         
         def parse_time(dt_str):
             try: return pd.to_datetime(dt_str)
@@ -97,6 +111,7 @@ if st.button("🪄 Generate Batch Allocation", type="primary"):
         
         weekly_shift_counts = {s['name']: 0 for s in staff_data}
         
+        # Factor in shifts already assigned outside this batch
         for r in rotas_data:
             if r['show_id'] not in [s['id'] for s in shows_in_batch]:
                 for role, people in r.get('allocation', {}).items():
@@ -148,18 +163,32 @@ if st.button("🪄 Generate Batch Allocation", type="primary"):
                         profile = staff_dict[candidate]
                         score = 1000 
                         
+                        # 1. Standard workload fairness penalty
                         score -= (weekly_shift_counts.get(candidate, 0) * 100)
                         
+                        # 2. First-come bonus
                         rank = submission_ranks.get(candidate, 100)
                         score += (100 - rank) 
                         
+                        # 3. Dynamic Fulfillment Ratio Equity Balancing Toggle
+                        if equalize_ratios:
+                            assigned_so_far = weekly_shift_counts.get(candidate, 0)
+                            total_requested = avail_totals.get(candidate, 1)
+                            ratio = assigned_so_far / total_requested
+                            
+                            # Heavy penalty for staff whose fulfillment ratio is high; reward those with low ratios
+                            score -= int(ratio * 800)
+                        
+                        # 4. Training
                         if role_name in profile.get('roles', []): score += 500
                         else: score -= 2000 
                             
+                        # 5. Venue restrictions
                         venue_short = "ALH" if show['venue'] == "Alhambra" else "SGH" if show['venue'] == "St George's Hall" else "Studio"
                         if venue_short not in profile.get('venue_restrictions', []):
                             score -= 3000 
                             
+                        # 6. Priority Groups bonus
                         priority = show.get('priority_group', 'None')
                         if priority != "None" and priority in profile.get('groups', []):
                             score += 1500
@@ -194,7 +223,7 @@ if st.button("🪄 Generate Batch Allocation", type="primary"):
             })
 
         save_rotas(generated_rotas)
-        st.success(f"Successfully generated rotas for {len(generated_rotas)} shows!")
+        st.success(f"Successfully generated rotas for {len(generated_rotas)} shows (Equal Ratio Balancing: {'ON' if equalize_ratios else 'OFF'})!")
         
         st.write("### 3. Allocation Results")
         for draft in generated_rotas:
