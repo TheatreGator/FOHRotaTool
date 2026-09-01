@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import json
 import os
+import re
 from datetime import datetime
 
 st.set_page_config(page_title="Generate Rota", layout="wide")
@@ -28,13 +29,16 @@ if not staff_data or not availability_data:
     st.warning("Please ensure Staff and Availability data are loaded before generating rotas.")
     st.stop()
 
-# Create a fast-lookup dictionary for staff profiles
 staff_dict = {s['name']: s for s in staff_data}
 
-# Select a show
 show_options = {s['id']: f"{s['date']} {s['curtain_time'][:5]} - {s['show_name']} ({s['venue']})" for s in shows_data}
 selected_show_id = st.selectbox("Select Performance to Schedule", options=list(show_options.keys()), format_func=lambda x: show_options[x])
 selected_show = next((s for s in shows_data if s['id'] == selected_show_id), None)
+
+def clean_string(text):
+    # Removes all punctuation and double spaces for foolproof matching
+    text = re.sub(r'[^\w\s]', '', str(text).lower())
+    return " ".join(text.split())
 
 if selected_show:
     st.write("---")
@@ -51,25 +55,39 @@ if selected_show:
     if st.button("🪄 Generate Draft Allocation", type="primary"):
         with st.spinner("Scoring candidates..."):
             
-            # 1. Match messy MS Forms availability strings to this specific show date/name
             show_date_obj = datetime.strptime(selected_show['date'], "%Y-%m-%d")
-            day_str = show_date_obj.strftime("%d").lstrip("0") # e.g. "28" or "1"
-            month_str = show_date_obj.strftime("%B").lower() # e.g. "april"
-            show_name_lower = selected_show['show_name'].lower()
+            exact_date_str = show_date_obj.strftime("%d %B").lower() 
+            clean_target_name = clean_string(selected_show['show_name'])
             
             available_candidates = []
+            debug_log = []
+            
             for person in availability_data:
                 for shift_str in person['available_shifts']:
-                    shift_lower = shift_str.lower()
-                    # Basic matching: check if day, month, and show name exist in the availability string
-                    if day_str in shift_lower and month_str in shift_lower and show_name_lower in shift_lower:
-                        if person['employee'] in staff_dict: # Ensure they exist in the database
+                    clean_shift = clean_string(shift_str)
+                    
+                    if exact_date_str in clean_shift and clean_target_name in clean_shift:
+                        if person['employee'] in staff_dict: 
                             available_candidates.append(person['employee'])
+                        else:
+                            debug_log.append(f"⚠️ Found {person['employee']} in availability, but they are MISSING from the Staff Database!")
                         break 
             
-            st.info(f"**Found {len(available_candidates)} available staff members for this shift.**")
+            if len(available_candidates) == 0:
+                st.error("Found 0 available staff members for this shift.")
+                st.info(f"**Troubleshooting:** The system searched your availability spreadsheet for any shifts containing: \n\n`{exact_date_str}` AND `{clean_target_name}`")
+                if debug_log:
+                    for log in debug_log:
+                        st.warning(log)
+                st.stop()
+            else:
+                st.info(f"**Found {len(available_candidates)} available staff members for this shift.**")
+                if debug_log:
+                    with st.expander("Database Warnings"):
+                        for log in debug_log:
+                            st.write(log)
             
-            # 2. Allocation Engine (Scoring System)
+            # 2. Allocation Engine
             allocation = {"Supervisor": [], "Merch": [], "Kiosk": [], "Access Host": [], "Ushers": []}
             remaining_candidates = available_candidates.copy()
             
@@ -81,31 +99,27 @@ if selected_show:
                     
                     for candidate in staff_pool:
                         profile = staff_dict[candidate]
-                        score = 1000 # Base score: They are available
+                        score = 1000 
                         
-                        # Bonus: Trained in the role
                         if role_name in profile.get('roles', []):
                             score += 500
                         else:
-                            score -= 2000 # Penalty: Untrained
+                            score -= 2000 
                             
-                        # Penalty: Venue Restriction
                         venue_short = "ALH" if selected_show['venue'] == "Alhambra" else "SGH" if selected_show['venue'] == "St George's Hall" else "Studio"
                         if venue_short not in profile.get('venue_restrictions', []):
-                            score -= 3000 # Penalty: Cannot work this venue
+                            score -= 3000 
                             
                         if score > best_score:
                             best_score = score
                             best_candidate = candidate
                             
-                    # Only assign if they meet the absolute minimum requirements (score > 0)
                     if best_candidate and best_score > 0:
                         assigned.append(best_candidate)
                         staff_pool.remove(best_candidate)
                         
                 return assigned
 
-            # Allocate specialized roles first, ushers last
             allocation["Supervisor"] = allocate_role("Supervisor", reqs['Supervisor'], remaining_candidates)
             allocation["Merch"] = allocate_role("Merch", reqs['Merch'], remaining_candidates)
             allocation["Kiosk"] = allocate_role("Kiosk", reqs['Kiosk'], remaining_candidates)
@@ -114,7 +128,6 @@ if selected_show:
             
             allocation["Ushers"] = allocate_role("Usher", reqs['Ushers'], remaining_candidates)
             
-            # 3. Output Results
             st.success("Draft Generated!")
             
             col_left, col_right = st.columns(2)
@@ -127,7 +140,7 @@ if selected_show:
                             for name in allocation[role]:
                                 st.write(f"- {name}")
                         else:
-                            st.error(f"Missing {role}")
+                            st.error(f"Missing {role} - No available trained staff")
                         st.write("")
                         
             with col_right:
@@ -136,7 +149,7 @@ if selected_show:
                     for name in allocation['Ushers']:
                         st.write(f"- {name}")
                 else:
-                    st.error("Missing Ushers")
+                    st.error("Missing Ushers - Not enough staff available")
             
             st.write("---")
             if remaining_candidates:
