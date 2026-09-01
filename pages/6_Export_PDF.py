@@ -32,7 +32,6 @@ if not rotas_data:
 shows_dict = {s['id']: s for s in shows_data}
 staff_names = sorted([s['name'] for s in staff_data])
 
-# Group saved rotas by Monday of their respective week
 def get_monday(date_str):
     dt = datetime.strptime(date_str, "%Y-%m-%d")
     monday = dt - timedelta(days=dt.weekday())
@@ -52,9 +51,8 @@ selected_weeks = []
 for monday_str, rotas_in_week in sorted(weeks_dict.items()):
     m_dt = datetime.strptime(monday_str, "%Y-%m-%d")
     sun_dt = m_dt + timedelta(days=6)
-    label = f"Week Commencing: {m_dt.strftime('%d %b %Y')} – {sun_dt.strftime('%d %b %Y')} ({len(rotas_in_week)} shifts scheduled)"
+    label = f"Week Commencing: {m_dt.strftime('%d %b %Y')} – {sun_dt.strftime('%d %b %Y')} ({len(rotas_in_week)} performances scheduled)"
     
-    # Use unique keys to prevent duplicate ID crashes
     if st.checkbox(label, value=True, key=f"week_chk_{monday_str}"):
         selected_weeks.append(monday_str)
 
@@ -63,140 +61,98 @@ if not selected_weeks:
     st.stop()
 
 if st.button("📄 Generate Weekly PDF(s)", type="primary"):
-    with st.spinner("Building professional weekly matrices..."):
+    with st.spinner("Building professional weekly performance matrices..."):
         buffer = BytesIO()
-        
-        # Landscape A4 gives us maximum width for 7 days + staff names
-        doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+        doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=15, leftMargin=15, topMargin=15, bottomMargin=15)
         elements = []
         
         styles = getSampleStyleSheet()
-        title_style = ParagraphStyle(
-            'WeekTitle',
-            parent=styles['Heading1'],
-            fontSize=16,
-            leading=20,
-            alignment=1, # Center
-            textColor=colors.HexColor("#1f2937")
-        )
-        cell_style = ParagraphStyle(
-            'GridCell',
-            parent=styles['Normal'],
-            fontSize=7,
-            leading=9,
-            alignment=1 # Center
-        )
-        name_style = ParagraphStyle(
-            'StaffName',
-            parent=styles['Normal'],
-            fontSize=7.5,
-            leading=9,
-            fontName='Helvetica-Bold',
-            alignment=0 # Left
-        )
-        header_style = ParagraphStyle(
-            'HeaderCell',
-            parent=styles['Normal'],
-            fontSize=8,
-            leading=10,
-            fontName='Helvetica-Bold',
-            alignment=1,
-            textColor=colors.whitesmoke
-        )
+        title_style = ParagraphStyle('WeekTitle', parent=styles['Heading1'], fontSize=14, leading=18, alignment=1, textColor=colors.HexColor("#1f2937"))
+        cell_style = ParagraphStyle('GridCell', parent=styles['Normal'], fontSize=6.5, leading=8, alignment=1)
+        name_style = ParagraphStyle('StaffName', parent=styles['Normal'], fontSize=7, leading=8.5, fontName='Helvetica-Bold', alignment=0)
+        header_style = ParagraphStyle('HeaderCell', parent=styles['Normal'], fontSize=7.5, leading=9, fontName='Helvetica-Bold', alignment=1, textColor=colors.whitesmoke)
 
         for w_idx, monday_str in enumerate(selected_weeks):
             m_dt = datetime.strptime(monday_str, "%Y-%m-%d")
             week_rotas = weeks_dict[monday_str]
             
-            # Map out the 7 days of the week (Monday to Sunday)
-            days = [m_dt + timedelta(days=i) for i in range(7)]
-            day_names = [d.strftime("%a %d %b") for d in days]
+            # Sort performances chronologically by date and curtain time
+            week_rotas.sort(key=lambda x: (x['date'], x['curtain_time']))
             
-            # Organize shows by day
-            shows_by_day = {i: [] for i in range(7)}
-            for r in week_rotas:
-                r_dt = datetime.strptime(r['date'], "%Y-%m-%d")
-                day_idx = r_dt.weekday() # 0 = Mon, 6 = Sun
-                if 0 <= day_idx <= 6:
-                    shows_by_day[day_idx].append(r)
-            
-            # Build Matrix Headers
-            venues_row = ["Staff Name"]
-            shows_row = ["Venue / Show"]
+            # Each performance gets its own discrete column side-by-side
+            dates_row = ["Staff Name"]
+            venues_row = ["Venue"]
+            shows_row = ["Show"]
             times_row = ["Perf Time"]
             
-            for i in range(7):
-                day_shows = shows_by_day[i]
-                if day_shows:
-                    # If multiple shows on one day, combine or take primary
-                    v_str = ", ".join(set([shows_dict.get(s['show_id'], {}).get('venue', 'Alhambra') for s in day_shows]))
-                    s_str = ", ".join([s['show_name'] for s in day_shows])
-                    t_str = ", ".join([shows_dict.get(s['show_id'], {}).get('curtain_time', '')[:5] for s in day_shows])
-                    
-                    venues_row.append(v_str)
-                    shows_row.append(s_str)
-                    times_row.append(t_str)
-                else:
-                    venues_row.append("-")
-                    shows_row.append("No Show")
-                    times_row.append("-")
+            for r in week_rotas:
+                r_dt = datetime.strptime(r['date'], "%Y-%m-%d")
+                show_info = shows_dict.get(r['show_id'], {})
+                venue = show_info.get('venue', 'Alhambra')
+                time = show_info.get('curtain_time', '')[:5]
+                
+                dates_row.append(r_dt.strftime("%a %d %b"))
+                venues_row.append(venue)
+                shows_row.append(r['show_name'])
+                times_row.append(time)
             
+            num_cols = len(week_rotas)
+            
+            # Construct table header rows
             table_data = [
-                [Paragraph(f"<b>BRADFORD THEATRES - FOH ROTA (W/C {m_dt.strftime('%d %B %Y')})</b>", title_style), "", "", "", "", "", "", ""],
-                [Paragraph(h, header_style) for h in ["Staff Name"] + day_names],
-                [Paragraph(v, cell_style) for v in venues_row],
-                [Paragraph(s, cell_style) for s in shows_row],
-                [Paragraph(t, cell_style) for t in times_row]
+                [Paragraph(f"<b>BRADFORD THEATRES - FOH ROTA (W/C {m_dt.strftime('%d %B %Y')})</b>", title_style)] + [""] * num_cols,
+                [Paragraph(h, header_style) for h in dates_row],
+                [Paragraph(v, header_style) for v in venues_row],
+                [Paragraph(s, header_style) for s in shows_row],
+                [Paragraph(t, header_style) for t in times_row]
             ]
             
-            # Map staff allocations across the week
-            # We want to check every rota in this week to see where each staff member is working
+            # Populate staff allocations per performance column
             for staff in staff_names:
                 row = [Paragraph(staff, name_style)]
-                for i in range(7):
-                    day_shows = shows_by_day[i]
+                for r in week_rotas:
+                    alloc = r.get('allocation', {})
                     assigned_roles = []
-                    
-                    for s in day_shows:
-                        alloc = s.get('allocation', {})
-                        for role, members in alloc.items():
-                            if staff in members:
-                                # Find call time if available
-                                show_info = shows_dict.get(s['show_id'], {})
-                                call_t = show_info.get('call_time', '18:45:00')[:5]
-                                role_short = role[:5] # e.g. Super, Usher, Kiosk
-                                assigned_roles.append(f"{call_t} {role_short}")
-                                
+                    for role, members in alloc.items():
+                        if staff in members:
+                            show_info = shows_dict.get(r['show_id'], {})
+                            call_t = show_info.get('call_time', '18:45:00')[:5]
+                            role_short = role[:5]
+                            assigned_roles.append(f"{call_t} {role_short}")
+                            
                     if assigned_roles:
                         row.append(Paragraph("<br/>".join(assigned_roles), cell_style))
                     else:
                         row.append(Paragraph("", cell_style))
                 table_data.append(row)
             
-            # Column widths: 90 for staff names, 100 for each of the 7 days (Total ~790 fits landscape A4)
-            col_widths = [90, 100, 100, 100, 100, 100, 100, 100]
+            # Dynamic column widths to comfortably fit landscape A4
+            usable_width = 812
+            name_col_width = 85
+            remaining_width = usable_width - name_col_width
+            perf_col_width = max(40, remaining_width / num_cols) if num_cols > 0 else 50
+            col_widths = [name_col_width] + [perf_col_width] * num_cols
             
-            t = Table(table_data, colWidths=col_widths, repeatRows=2)
+            t = Table(table_data, colWidths=col_widths, repeatRows=5)
             t.setStyle(TableStyle([
-                ('SPAN', (0, 0), (-1, 0)), # Title span across all columns
-                ('BACKGROUND', (0, 1), (-1, 1), colors.HexColor("#1f2937")), # Day header dark background
+                ('SPAN', (0, 0), (-1, 0)),
+                ('BACKGROUND', (0, 1), (-1, 1), colors.HexColor("#1f2937")), # Dates header
+                ('BACKGROUND', (0, 2), (-1, 2), colors.HexColor("#374151")), # Venues header
+                ('BACKGROUND', (0, 3), (-1, 3), colors.HexColor("#4b5563")), # Shows header
+                ('BACKGROUND', (0, 4), (-1, 4), colors.HexColor("#6b7280")), # Times header
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('GRID', (0, 1), (-1, -1), 0.5, colors.HexColor("#d1d5db")),
-                ('BACKGROUND', (0, 2), (-1, 4), colors.HexColor("#f3f4f6")), # Venue/Show/Time meta rows background
-                ('TOPPADDING', (0, 0), (-1, -1), 3),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('TOPPADDING', (0, 0), (-1, -1), 2.5),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 2.5),
             ]))
             
             elements.append(t)
-            
-            # Add Page Break between weeks (ensuring strictly one week per page)
             if w_idx < len(selected_weeks) - 1:
                 elements.append(PageBreak())
                 
         doc.build(elements)
-        
-        st.success("Weekly Matrix PDF Generated Successfully!")
+        st.success("Weekly Performance Matrix PDF Generated Successfully!")
         st.download_button(
             label="⬇️ Download Weekly Rota PDF",
             data=buffer.getvalue(),
