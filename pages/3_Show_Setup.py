@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import json
 import os
+from datetime import datetime
 
 st.set_page_config(page_title="Show Setup", layout="wide")
 st.title("Show Setup & Staffing Calculator")
@@ -26,11 +27,11 @@ def save_shows(shows):
 
 shows_list = load_shows()
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 
 with col1:
     # Form to add a new show
-    with st.expander("➕ Add New Performance", expanded=False):
+    with st.expander("➕ Add Show", expanded=False):
         with st.form("add_show_form"):
             show_name = st.text_input("Show Name", placeholder="e.g. Blood Brothers")
             venue = st.selectbox("Venue", ["Alhambra", "St George's Hall", "The Studio"])
@@ -45,16 +46,14 @@ with col1:
             merch_req = st.checkbox("Merch Staff Required", value=True)
             kiosk_req = st.checkbox("Kiosk Staff Required", value=True)
             access_host = st.checkbox("Access Host Required", value=False)
-            notes = st.text_input("Special Requirements", placeholder="e.g. Audio Described, Relaxed")
+            notes = st.text_input("Special Requirements")
 
-            submitted = st.form_submit_button("Calculate Staff & Save Show")
+            submitted = st.form_submit_button("Save Show")
 
             if submitted and show_name:
-                # Core Staffing Rules Engine
                 req_supervisor = 1
                 req_ushers = 0
                 
-                # Venue specific base rules
                 if venue == "Alhambra":
                     if stalls_open: req_ushers += 4
                     if dc_open: req_ushers += 2
@@ -62,22 +61,14 @@ with col1:
                 elif venue == "St George's Hall":
                     if stalls_open: req_ushers += 4
                     if dc_open: req_ushers += 2
-                else: # Studio
+                else: 
                     req_ushers += 2
                     
-                # Extra ushers driven by audience size (1 extra per 250 attendees over 500)
                 if audience > 500:
-                    extra_ushers = (audience - 500) // 250
-                    req_ushers += int(extra_ushers)
+                    req_ushers += int((audience - 500) // 250)
                     
-                # Specialized roles
-                req_merch = 1 if merch_req else 0
-                req_kiosk = 2 if kiosk_req else 0
-                req_access = 1 if access_host else 0
-                
-                total_staff = req_supervisor + req_ushers + req_merch + req_kiosk + req_access
+                total_staff = req_supervisor + req_ushers + (1 if merch_req else 0) + (2 if kiosk_req else 0) + (1 if access_host else 0)
 
-                # Create the show record
                 new_show = {
                     "id": f"{show_date}_{show_name.replace(' ', '')}_{curtain_time}",
                     "show_name": show_name,
@@ -85,12 +76,18 @@ with col1:
                     "date": str(show_date),
                     "curtain_time": str(curtain_time),
                     "audience": audience,
+                    "stalls_open": stalls_open,
+                    "dc_open": dc_open,
+                    "uc_open": uc_open,
+                    "merch_req": merch_req,
+                    "kiosk_req": kiosk_req,
+                    "access_host": access_host,
                     "requirements": {
                         "Supervisor": req_supervisor,
                         "Ushers": req_ushers,
-                        "Merch": req_merch,
-                        "Kiosk": req_kiosk,
-                        "Access Host": req_access,
+                        "Merch": 1 if merch_req else 0,
+                        "Kiosk": 2 if kiosk_req else 0,
+                        "Access Host": 1 if access_host else 0,
                         "Total": total_staff
                     },
                     "notes": notes
@@ -102,11 +99,93 @@ with col1:
                 st.rerun()
 
 with col2:
+    # Form to edit a show
+    if shows_list:
+        with st.expander("✏️ Edit Show", expanded=False):
+            show_options = {s['id']: f"{s['date']} {s['curtain_time'][:5]} - {s['show_name']} ({s['venue']})" for s in shows_list}
+            edit_target_id = st.selectbox("Select show to edit", options=list(show_options.keys()), format_func=lambda x: show_options[x])
+            edit_target = next((s for s in shows_list if s["id"] == edit_target_id), None)
+            
+            if edit_target:
+                with st.form("edit_show_form"):
+                    e_name = st.text_input("Show Name", value=edit_target.get("show_name", ""))
+                    
+                    venue_options = ["Alhambra", "St George's Hall", "The Studio"]
+                    current_venue_idx = venue_options.index(edit_target.get("venue", "Alhambra")) if edit_target.get("venue") in venue_options else 0
+                    e_venue = st.selectbox("Venue", venue_options, index=current_venue_idx)
+                    
+                    # Parse dates back to objects for the inputs
+                    current_date = datetime.strptime(edit_target["date"], "%Y-%m-%d").date() if "date" in edit_target else datetime.today().date()
+                    current_time = datetime.strptime(edit_target["curtain_time"], "%H:%M:%S").time() if "curtain_time" in edit_target else datetime.now().time()
+                    
+                    e_date = st.date_input("Date", value=current_date)
+                    e_time = st.time_input("Curtain Time", value=current_time)
+                    
+                    e_audience = st.number_input("Expected Audience", min_value=0, max_value=2000, step=50, value=edit_target.get("audience", 1150))
+                    
+                    # Default True for legacy shows that didn't save these specific booleans
+                    e_stalls = st.checkbox("Stalls Open", value=edit_target.get("stalls_open", True))
+                    e_dc = st.checkbox("Dress Circle Open", value=edit_target.get("dc_open", True))
+                    e_uc = st.checkbox("Upper Circle Open", value=edit_target.get("uc_open", True))
+                    e_merch = st.checkbox("Merch Staff Required", value=edit_target.get("merch_req", True))
+                    e_kiosk = st.checkbox("Kiosk Staff Required", value=edit_target.get("kiosk_req", True))
+                    e_access = st.checkbox("Access Host Required", value=edit_target.get("access_host", False))
+                    e_notes = st.text_input("Special Requirements", value=edit_target.get("notes", ""))
+                    
+                    update_show_submitted = st.form_submit_button("Recalculate & Update Show")
+                    
+                    if update_show_submitted:
+                        # Recalculate rules
+                        req_sup = 1
+                        req_ush = 0
+                        
+                        if e_venue == "Alhambra":
+                            if e_stalls: req_ush += 4
+                            if e_dc: req_ush += 2
+                            if e_uc: req_ush += 2
+                        elif e_venue == "St George's Hall":
+                            if e_stalls: req_ush += 4
+                            if e_dc: req_ush += 2
+                        else: 
+                            req_ush += 2
+                            
+                        if e_audience > 500:
+                            req_ush += int((e_audience - 500) // 250)
+                            
+                        t_staff = req_sup + req_ush + (1 if e_merch else 0) + (2 if e_kiosk else 0) + (1 if e_access else 0)
+                        
+                        edit_target.update({
+                            "show_name": e_name,
+                            "venue": e_venue,
+                            "date": str(e_date),
+                            "curtain_time": str(e_time),
+                            "audience": e_audience,
+                            "stalls_open": e_stalls,
+                            "dc_open": e_dc,
+                            "uc_open": e_uc,
+                            "merch_req": e_merch,
+                            "kiosk_req": e_kiosk,
+                            "access_host": e_access,
+                            "notes": e_notes,
+                            "requirements": {
+                                "Supervisor": req_sup,
+                                "Ushers": req_ush,
+                                "Merch": 1 if e_merch else 0,
+                                "Kiosk": 2 if e_kiosk else 0,
+                                "Access Host": 1 if e_access else 0,
+                                "Total": t_staff
+                            }
+                        })
+                        
+                        save_shows(shows_list)
+                        st.success(f"{e_name} updated successfully!")
+                        st.rerun()
+
+with col3:
     # Form to delete a show
     if shows_list:
-        with st.expander("🗑️ Delete Performance", expanded=False):
-            show_options = {s['id']: f"{s['date']} {s['curtain_time'][:5]} - {s['show_name']} ({s['venue']})" for s in shows_list}
-            to_delete_id = st.selectbox("Select performance to remove", options=list(show_options.keys()), format_func=lambda x: show_options[x])
+        with st.expander("🗑️ Delete Show", expanded=False):
+            to_delete_id = st.selectbox("Select show to remove", options=list(show_options.keys()), format_func=lambda x: show_options[x])
             
             if st.button("Delete Performance", type="primary"):
                 shows_list = [s for s in shows_list if s["id"] != to_delete_id]
@@ -119,12 +198,11 @@ if shows_list:
     st.write("---")
     st.subheader("Upcoming Programme & Requirements")
     
-    # Flatten the dictionary structure for a clean pandas dataframe display
     display_data = []
     for s in shows_list:
         flat_record = {
             "Date": s["date"],
-            "Time": s["curtain_time"][:5], # truncate seconds
+            "Time": s["curtain_time"][:5], 
             "Show": s["show_name"],
             "Venue": s["venue"],
             "Audience": s["audience"],
@@ -132,7 +210,8 @@ if shows_list:
             "Ushers": s["requirements"]["Ushers"],
             "Kiosk": s["requirements"]["Kiosk"],
             "Merch": s["requirements"]["Merch"],
-            "Total Required": s["requirements"]["Total"]
+            "Total Required": s["requirements"]["Total"],
+            "Notes": s.get("notes", "")
         }
         display_data.append(flat_record)
         
@@ -142,4 +221,3 @@ if shows_list:
     st.dataframe(df, use_container_width=True, hide_index=True)
 else:
     st.info("No shows found. Add a performance above to generate staffing requirements.")
-    
