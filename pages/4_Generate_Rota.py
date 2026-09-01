@@ -22,7 +22,6 @@ def save_rota(show_id, show_name, date, allocation, reserves):
     rotas_file = "data/rotas.json"
     rotas = load_json(rotas_file)
     
-    # Remove older drafts of this same show to avoid duplicates
     rotas = [r for r in rotas if r['show_id'] != show_id]
     
     new_rota = {
@@ -41,6 +40,7 @@ def save_rota(show_id, show_name, date, allocation, reserves):
 staff_data = load_json("data/staff.json")
 availability_data = load_json("data/availability.json")
 shows_data = load_json("data/shows.json")
+rotas_data = load_json("data/rotas.json")
 
 if not shows_data:
     st.warning("No shows found. Please add a performance in the Show Setup module first.")
@@ -50,7 +50,6 @@ if not staff_data or not availability_data:
     st.stop()
 
 staff_dict = {s['name']: s for s in staff_data}
-
 show_options = {s['id']: f"{s['date']} {s['curtain_time'][:5]} - {s['show_name']} ({s['venue']})" for s in shows_data}
 selected_show_id = st.selectbox("Select Performance to Schedule", options=list(show_options.keys()), format_func=lambda x: show_options[x])
 selected_show = next((s for s in shows_data if s['id'] == selected_show_id), None)
@@ -72,41 +71,60 @@ if selected_show:
     col5.metric("Access Host", reqs.get('Access Host', 0))
 
     if st.button("🪄 Generate Draft Allocation", type="primary"):
-        with st.spinner("Scoring candidates..."):
+        with st.spinner("Analyzing conflicts and scoring candidates..."):
             
             show_date_obj = datetime.strptime(selected_show['date'], "%Y-%m-%d")
             exact_date_str = show_date_obj.strftime("%d %B").lower() 
             clean_target_name = clean_string(selected_show['show_name'])
             
+            # 1. Analyze existing rotas for Fairness & Conflicts
+            shift_counts = {s['name']: 0 for s in staff_data}
+            conflicting_staff = []
+            
+            for r in rotas_data:
+                alloc = r.get('allocation', {})
+                for role, people in alloc.items():
+                    for person in people:
+                        if person != "--- Unassigned ---" and person in shift_counts:
+                            shift_counts[person] += 1
+                
+                if r['date'] == selected_show['date'] and r['show_id'] != selected_show['id']:
+                    if r.get('curtain_time', '')[:5] == selected_show['curtain_time'][:5]:
+                        for role, people in alloc.items():
+                            conflicting_staff.extend([p for p in people if p != "--- Unassigned ---"])
+
+            # 2. Build Available Candidates & Calculate First-Come Rank
             available_candidates = []
-            debug_log = []
+            
+            # Sort the entire availability data by completion time to rank them chronologically
+            def parse_time(dt_str):
+                try:
+                    return pd.to_datetime(dt_str)
+                except:
+                    return pd.Timestamp.max
+            
+            availability_sorted = sorted(availability_data, key=lambda x: parse_time(x.get('completion_time', '')))
+            
+            # Create a dictionary of submission ranks (1 = fastest, 2 = second fastest, etc.)
+            submission_ranks = {person['employee']: rank for rank, person in enumerate(availability_sorted)}
             
             for person in availability_data:
+                emp_name = person['employee']
+                if emp_name in conflicting_staff:
+                    continue
+                    
                 for shift_str in person['available_shifts']:
                     clean_shift = clean_string(shift_str)
-                    
                     if exact_date_str in clean_shift and clean_target_name in clean_shift:
-                        if person['employee'] in staff_dict: 
-                            available_candidates.append(person['employee'])
-                        else:
-                            debug_log.append(f"⚠️ Found {person['employee']} in availability, but they are MISSING from the Staff Database!")
+                        if emp_name in staff_dict: 
+                            available_candidates.append(emp_name)
                         break 
             
             if len(available_candidates) == 0:
                 st.error("Found 0 available staff members for this shift.")
-                st.info(f"**Troubleshooting:** The system searched your availability spreadsheet for any shifts containing: \n\n`{exact_date_str}` AND `{clean_target_name}`")
-                if debug_log:
-                    for log in debug_log:
-                        st.warning(log)
                 st.stop()
-            else:
-                st.info(f"**Found {len(available_candidates)} available staff members for this shift.**")
-                if debug_log:
-                    with st.expander("Database Warnings"):
-                        for log in debug_log:
-                            st.write(log)
             
-            # Allocation Engine
+            # 3. Allocation Engine
             allocation = {"Supervisor": [], "Merch": [], "Kiosk": [], "Access Host": [], "Ushers": []}
             remaining_candidates = available_candidates.copy()
             
@@ -120,11 +138,20 @@ if selected_show:
                         profile = staff_dict[candidate]
                         score = 1000 
                         
+                        # PREVIOUS FAIRNESS: Subtract 100 points for every shift they already have
+                        score -= (shift_counts.get(candidate, 0) * 100)
+                        
+                        # NEW FIRST-COME FAIRNESS: Add up to 100 bonus points based on how early they submitted their form
+                        rank = submission_ranks.get(candidate, 100)
+                        score += (100 - rank) 
+                        
+                        # TRAINING
                         if role_name in profile.get('roles', []):
                             score += 500
                         else:
                             score -= 2000 
                             
+                        # VENUE
                         venue_short = "ALH" if selected_show['venue'] == "Alhambra" else "SGH" if selected_show['venue'] == "St George's Hall" else "Studio"
                         if venue_short not in profile.get('venue_restrictions', []):
                             score -= 3000 
@@ -147,10 +174,9 @@ if selected_show:
             
             allocation["Ushers"] = allocate_role("Usher", reqs['Ushers'], remaining_candidates)
             
-            # Save the draft
             save_rota(selected_show['id'], selected_show['show_name'], selected_show['date'], allocation, remaining_candidates)
             
-            st.success("Draft Generated and Saved! Head to the Rota Editor to make manual tweaks.")
+            st.success("Draft Generated! Staff were prioritized based on their Form submission time.")
             
             col_left, col_right = st.columns(2)
             
@@ -160,27 +186,34 @@ if selected_show:
                         st.write(f"**{role} ({len(allocation.get(role, []))}/{reqs[role]})**")
                         if allocation.get(role):
                             for name in allocation[role]:
-                                st.write(f"- {name}")
+                                rank_display = submission_ranks.get(name, 'N/A') + 1
+                                st.write(f"- {name} *(Submission #{rank_display})*")
                         
-                        # Check if we are short on staff for this role
                         shortfall = reqs[role] - len(allocation.get(role, []))
                         if shortfall > 0:
-                            st.error(f"Missing {shortfall} {role}(s) - Check reserves or staff training")
+                            st.error(f"Missing {shortfall} {role}(s)")
                         st.write("")
                         
             with col_right:
                 st.write(f"**Ushers ({len(allocation.get('Ushers', []))}/{reqs['Ushers']})**")
                 if allocation.get('Ushers'):
                     for name in allocation['Ushers']:
-                        st.write(f"- {name}")
+                        rank_display = submission_ranks.get(name, 'N/A') + 1
+                        st.write(f"- {name} *(Submission #{rank_display})*")
                 
-                # Check if we are short on ushers
                 usher_shortfall = reqs['Ushers'] - len(allocation.get('Ushers', []))
                 if usher_shortfall > 0:
-                    st.error(f"Missing {usher_shortfall} Usher(s) - Not enough available staff")
+                    st.error(f"Missing {usher_shortfall} Usher(s)")
                     
             st.write("---")
+            if conflicting_staff:
+                with st.expander(f"Blocked by Conflicts ({len(conflicting_staff)})"):
+                    st.write("These staff members were available but are already assigned to another show at this exact time:")
+                    for name in set(conflicting_staff):
+                        st.write(f"- {name}")
+                        
             if remaining_candidates:
                 with st.expander(f"Available Reserves ({len(remaining_candidates)})"):
                     for name in remaining_candidates:
-                        st.write(f"- {name}")
+                        rank_display = submission_ranks.get(name, 'N/A') + 1
+                        st.write(f"- {name} *(Submission #{rank_display})*")
