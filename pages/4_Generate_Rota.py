@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Generate Weekly Rota", layout="wide")
 st.title("Weekly Rota Generator")
-st.write("Batch allocate staff for an entire week of performances.")
+st.write("Batch allocate staff for performances based on availability and venue rules.")
 
 def load_json(filepath):
     if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
@@ -37,10 +37,10 @@ rotas_data = load_json("data/rotas.json")
 commitments_data = load_json("data/commitments.json")
 
 if not shows_data:
-    st.warning("No shows found. Please add performances in the Show Setup module first.")
+    st.warning("No shows found. Please import your master spreadsheet first.")
     st.stop()
 if not staff_data or not availability_data:
-    st.warning("Please ensure Staff and Availability data are loaded before generating rotas.")
+    st.warning("Please ensure Staff and Availability data are loaded.")
     st.stop()
 
 staff_dict = {s['name']: s for s in staff_data}
@@ -49,30 +49,44 @@ def clean_string(text):
     text = re.sub(r'[^\w\s]', '', str(text).lower())
     return " ".join(text.split())
 
-st.write("### 1. Select Date Range")
-col1, col2 = st.columns(2)
-with col1:
-    start_date = st.date_input("Start Date")
-with col2:
-    end_date = st.date_input("End Date", value=start_date + timedelta(days=6))
+# Sort all shows chronologically by default
+shows_data.sort(key=lambda x: (x['date'], x['curtain_time']))
 
-shows_in_week = [
-    s for s in shows_data 
-    if start_date <= datetime.strptime(s['date'], "%Y-%m-%d").date() <= end_date
-]
-shows_in_week.sort(key=lambda x: (x['date'], x['curtain_time']))
+st.write("### 1. Select Scheduling Scope")
+selection_mode = st.radio("Choose selection method:", ["By Date Range", "Select All Loaded Shows (" + str(len(shows_data)) + " total)"])
 
-if not shows_in_week:
-    st.info("No shows scheduled in this date range.")
+shows_in_batch = []
+
+if selection_mode == "By Date Range":
+    col1, col2 = st.columns(2)
+    min_date = datetime.strptime(shows_data[0]['date'], "%Y-%m-%d").date()
+    max_date = datetime.strptime(shows_data[-1]['date'], "%Y-%m-%d").date()
+    
+    with col1:
+        start_date = st.date_input("Start Date", value=min_date, min_value=min_date, max_value=max_date)
+    with col2:
+        end_date = st.date_input("End Date", value=max_date, min_value=min_date, max_value=max_date)
+        
+    shows_in_batch = [
+        s for s in shows_data 
+        if start_date <= datetime.strptime(s['date'], "%Y-%m-%d").date() <= end_date
+    ]
+else:
+    shows_in_batch = shows_data
+
+if not shows_in_batch:
+    st.info("No shows found in the selected range.")
     st.stop()
 
 st.write("---")
-st.write(f"### 2. Shows to Schedule ({len(shows_in_week)})")
-for s in shows_in_week:
-    st.write(f"- {s['date']} {s['curtain_time'][:5]} | **{s['show_name']}** ({s['venue']})")
+st.write(f"### 2. Shows Included in this Batch ({len(shows_in_batch)})")
 
-if st.button("🪄 Generate Weekly Allocation", type="primary"):
-    with st.spinner("Processing entire week..."):
+with st.expander("🔍 View Selected Shows List"):
+    for s in shows_in_batch:
+        st.write(f"- {s['date']} {s['curtain_time'][:5]} | **{s['show_name']}** ({s['venue']})")
+
+if st.button("🪄 Generate Batch Allocation", type="primary"):
+    with st.spinner("Processing batch allocation..."):
         
         def parse_time(dt_str):
             try: return pd.to_datetime(dt_str)
@@ -84,7 +98,7 @@ if st.button("🪄 Generate Weekly Allocation", type="primary"):
         weekly_shift_counts = {s['name']: 0 for s in staff_data}
         
         for r in rotas_data:
-            if r['show_id'] not in [s['id'] for s in shows_in_week]:
+            if r['show_id'] not in [s['id'] for s in shows_in_batch]:
                 for role, people in r.get('allocation', {}).items():
                     for person in people:
                         if person != "--- Unassigned ---" and person in weekly_shift_counts:
@@ -92,7 +106,7 @@ if st.button("🪄 Generate Weekly Allocation", type="primary"):
                             
         generated_rotas = []
         
-        for show in shows_in_week:
+        for show in shows_in_batch:
             show_date_obj = datetime.strptime(show['date'], "%Y-%m-%d")
             exact_date_str = show_date_obj.strftime("%d %B").lower() 
             clean_target_name = clean_string(show['show_name'])
@@ -100,13 +114,11 @@ if st.button("🪄 Generate Weekly Allocation", type="primary"):
             
             conflicting_staff = []
             
-            # Check existing drafts for simultaneous conflicts
             for existing_draft in generated_rotas:
                 if existing_draft['date'] == show['date'] and existing_draft['curtain_time'][:5] == show['curtain_time'][:5]:
                     for role, people in existing_draft['allocation'].items():
                         conflicting_staff.extend([p for p in people if p != "--- Unassigned ---"])
                         
-            # Check external commitments for the entire day
             for c in commitments_data:
                 if c['date'] == show['date']:
                     conflicting_staff.append(c['name'])
@@ -148,7 +160,6 @@ if st.button("🪄 Generate Weekly Allocation", type="primary"):
                         if venue_short not in profile.get('venue_restrictions', []):
                             score -= 3000 
                             
-                        # STAFF GROUPS BONUS
                         priority = show.get('priority_group', 'None')
                         if priority != "None" and priority in profile.get('groups', []):
                             score += 1500
@@ -183,13 +194,13 @@ if st.button("🪄 Generate Weekly Allocation", type="primary"):
             })
 
         save_rotas(generated_rotas)
-        st.success("Weekly Rota Generated and Saved!")
+        st.success(f"Successfully generated rotas for {len(generated_rotas)} shows!")
         
         st.write("### 3. Allocation Results")
         for draft in generated_rotas:
             with st.expander(f"{draft['date']} {draft['curtain_time'][:5]} - {draft['show_name']} ({draft['venue']})", expanded=False):
                 alloc = draft['allocation']
-                reqs = next(s['requirements'] for s in shows_in_week if s['id'] == draft['show_id'])
+                reqs = next(s['requirements'] for s in shows_in_batch if s['id'] == draft['show_id'])
                 
                 c1, c2 = st.columns(2)
                 with c1:
