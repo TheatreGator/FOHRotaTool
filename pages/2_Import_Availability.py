@@ -4,7 +4,6 @@ import json
 import os
 import sys
 
-# Ensure the app can find the services module
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from services.storage import load_staff, save_staff
 
@@ -46,7 +45,6 @@ if uploaded_file is not None:
             
             processed_data = []
             
-            # Load existing staff to check against
             staff_list = load_staff()
             existing_staff_names = [staff['name'].lower() for staff in staff_list]
             new_staff_added = 0
@@ -54,6 +52,9 @@ if uploaded_file is not None:
             for index, row in df.iterrows():
                 name = str(row['Name1']).strip()
                 comments = str(row[comments_col]).strip() if pd.notna(row[comments_col]) else ""
+                
+                # Capture the exact completion time from Microsoft Forms
+                completion_time = str(row.get('Completion time', ''))
                 
                 available_shifts = []
                 for col in performance_columns:
@@ -64,17 +65,17 @@ if uploaded_file is not None:
                 if name and name != "nan":
                     processed_data.append({
                         "employee": name,
+                        "completion_time": completion_time,
                         "comments": comments,
                         "available_shifts": available_shifts,
                         "total_available": len(available_shifts)
                     })
                     
-                    # Auto-import new staff
                     if name.lower() not in existing_staff_names:
                         new_profile = {
                             "name": name,
                             "active": True,
-                            "roles": ["Usher"], # Default baseline role
+                            "roles": ["Usher"], 
                             "preferred_shifts": 3,
                             "max_shifts": 5,
                             "double_allowed": True,
@@ -98,23 +99,7 @@ if uploaded_file is not None:
             total_shifts_offered = sum(len(p['available_shifts']) for p in processed_data)
             col3.metric("Total Shifts Logged", total_shifts_offered)
             
-            st.subheader("Data Preview")
-            display_df = pd.DataFrame(processed_data)
-            display_df['comments'] = display_df['comments'].apply(lambda x: x[:50] + '...' if len(x) > 50 else x)
-            
-            st.dataframe(
-                display_df[["employee", "total_available", "comments"]],
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            with st.expander("🔍 View Detailed Shift Allocations"):
-                for person in processed_data:
-                    st.write(f"**{person['employee']}** ({person['total_available']} shifts)")
-                    st.write(person['available_shifts'])
-                    st.divider()
-            
-            st.info("Data saved. You can now edit specific roles and restrictions for the newly imported staff in the Staff Database.")
+            st.info("Data saved. You must re-upload your Excel sheet now so the system can log the Completion Times.")
             
     except Exception as e:
         st.error(f"An error occurred while processing the file: {e}")
