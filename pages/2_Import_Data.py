@@ -7,7 +7,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Import & Data Management", layout="wide")
 st.title("Data Management & Master Importer")
-st.write("Upload your Microsoft Forms export to process data, back up your current workspace, or reset the system.")
+st.write("Upload your Microsoft Forms availability export and optional Staff Mastersheet to fine-tune profiles, roles, and shift constraints.")
 
 AVAILABILITY_FILE = "data/availability.json"
 STAFF_FILE = "data/staff.json"
@@ -66,9 +66,9 @@ with col_b2:
 
 st.write("---")
 
-# --- SECTION 2: MASTER SPREADSHEET UPLOAD ---
-st.subheader("📊 Master Spreadsheet Importer")
-uploaded_file = st.file_uploader("Upload Microsoft Forms Spreadsheet (.xlsx)", type=["xlsx"])
+# --- SECTION 2: MASTER AVAILABILITY & SHOWS UPLOAD ---
+st.subheader("📊 Step 1: Upload Microsoft Forms Availability Spreadsheet")
+uploaded_file = st.file_uploader("Upload Microsoft Forms Spreadsheet (.xlsx)", type=["xlsx"], key="avail_uploader")
 
 if uploaded_file is not None:
     try:
@@ -79,7 +79,6 @@ if uploaded_file is not None:
         else:
             st.success("File uploaded successfully! Running master extraction...")
             
-            # 1. PROCESS AVAILABILITY & STAFF
             comments_col = [col for col in df.columns if 'Comments' in col][0]
             start_idx = df.columns.get_loc(comments_col) + 1
             performance_columns = df.columns[start_idx:]
@@ -121,7 +120,7 @@ if uploaded_file is not None:
                         "max_shifts": 5,
                         "double_allowed": True,
                         "venue_restrictions": ["ALH", "SGH", "Studio"],
-                        "notes": "Auto-imported from Master Spreadsheet"
+                        "notes": "Auto-imported from Availability Sheet"
                     }
                     staff_list.append(new_profile)
                     existing_staff_names.append(name.lower())
@@ -131,7 +130,7 @@ if uploaded_file is not None:
             if new_staff_added > 0:
                 save_json(STAFF_FILE, staff_list)
             
-            # 2. PROCESS SHOWS & PARSE ACCURATE PERFORMANCE TIMES
+            # Process Shows
             existing_shows = load_json(SHOWS_FILE)
             existing_show_ids = {s['id'] for s in existing_shows}
             new_shows_added = 0
@@ -146,7 +145,6 @@ if uploaded_file is not None:
                 elif "Studio" in col_str or "The Studio" in col_str:
                     venue = "The Studio"
                 
-                # Extract Call Time explicitly
                 call_time = "18:45:00"
                 call_match = re.search(r'Call\s*Time[^\d]*(\d{1,2}:\d{2})', col_str, re.IGNORECASE)
                 if call_match:
@@ -154,24 +152,17 @@ if uploaded_file is not None:
                     if len(ct_str) == 5: ct_str += ":00"
                     call_time = ct_str
                 
-                # Find all times in the header string
                 all_times = re.findall(r'(\d{1,2}:\d{2})', col_str)
-                
-                # Filter out call times or duration times (like 17:30 approx end times)
-                # Usually, performance times appear right near the top of the header.
                 performance_times = []
                 for t in all_times:
                     t_full = f"{t}:00" if len(t) == 5 else f"0{t}:00"
-                    # Exclude the explicit call time from being considered a curtain time
                     if t_full != call_time and "approx" not in col_str[col_str.find(t):]:
-                        # Avoid duplicates if regex matches twice
                         if t_full not in performance_times:
                             performance_times.append(t_full)
                 
                 if not performance_times:
                     performance_times = ["19:30:00"]
                 
-                # Extract Date
                 date_match = re.search(r'([0-3]?[0-9])\s+(January|February|March|April|May|June|July|August|September|October|November|December)', col_str, re.IGNORECASE)
                 show_date_str = "2026-04-01"
                 if date_match:
@@ -183,7 +174,6 @@ if uploaded_file is not None:
                     except:
                         pass
                 
-                # Clean Show Name
                 cleaned_name = col_str.split('\n')[0]
                 cleaned_name = cleaned_name.replace("Alhambra", "").replace("St George's Hall", "").replace("The Studio", "")
                 cleaned_name = re.sub(r'^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+[0-3]?[0-9]\s+\w+\s+(\d{1,2}:\d{2}\s*(&\s*\d{1,2}:\d{2})?)?', '', cleaned_name).strip()
@@ -195,8 +185,6 @@ if uploaded_file is not None:
                 req_sup = 1
                 req_ush = 6 if venue == "Alhambra" else 4
                 
-                # If there are multiple performance times found in a single header column (e.g. "14:00 & 16:00"), 
-                # create a separate show record for EACH time so they appear cleanly side-by-side on the rota!
                 for p_idx, curtain_time in enumerate(performance_times):
                     show_id = f"col_{idx}_p{p_idx}_{show_date_str}_{cleaned_name.replace(' ', '')}_{curtain_time}"
                     
@@ -234,30 +222,107 @@ if uploaded_file is not None:
                         new_shows_added += 1
             
             save_json(SHOWS_FILE, existing_shows)
-            
-            st.success("Master Import Complete!")
-            
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Submissions Processed", len(processed_availability))
-            c2.metric("New Staff Added", new_staff_added)
-            c3.metric("Shows Extracted", len(parsed_shows_preview))
-            c4.metric("New Shows Added", new_shows_added)
-            
-            st.subheader("Extracted Programme Preview")
-            df_preview = pd.DataFrame(parsed_shows_preview)
-            st.dataframe(df_preview[["date", "curtain_time", "call_time", "show_name", "venue"]], use_container_width=True, hide_index=True)
+            st.success(f"Processed {len(processed_availability)} availability submissions and extracted {len(parsed_shows_preview)} performances.")
             
     except Exception as e:
-        st.error(f"An error occurred while processing the master file: {e}")
-else:
-    st.write("### Currently Loaded Status")
-    staff_count = len(load_json(STAFF_FILE))
-    show_count = len(load_json(SHOWS_FILE))
-    avail_count = len(load_json(AVAILABILITY_FILE))
-    rota_count = len(load_json(ROTAS_FILE))
-    
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Staff Database", staff_count)
-    col2.metric("Scheduled Shows", show_count)
-    col3.metric("Availability Entries", avail_count)
-    col4.metric("Generated Rotas", rota_count)
+        st.error(f"An error occurred while processing the file: {e}")
+
+st.write("---")
+
+# --- SECTION 3: STAFF MASTERETHEET FINE-TUNING UPLOAD ---
+st.subheader("⚙️ Step 2: Fine-Tune Staff Database with Mastersheet")
+st.write("Upload your **Staff Mastersheet.xlsx** to update trained roles (Supervisor, Merch, Kiosk, Access Host), shift limits, double permissions, and reasonable adjustments.")
+
+staff_master_file = st.file_uploader("Upload Staff Mastersheet (.xlsx)", type=["xlsx"], key="staff_master_uploader")
+
+if staff_master_file is not None:
+    try:
+        master_df = pd.read_excel(staff_master_file)
+        staff_list = load_json(STAFF_FILE)
+        
+        updated_count = 0
+        for idx, row in master_df.iterrows():
+            name_raw = row.get('Name')
+            if pd.isna(name_raw):
+                continue
+            name = str(name_raw).strip()
+            
+            # Find matching staff profile by name (case-insensitive)
+            profile = next((s for s in staff_list if str(s.get('name', '')).strip().lower() == name.lower()), None)
+            
+            if not profile:
+                # If staff member doesn't exist yet, create a new profile
+                profile = {
+                    "name": name,
+                    "active": True,
+                    "roles": ["Usher"],
+                    "groups": [],
+                    "preferred_shifts": 3,
+                    "max_shifts": 5,
+                    "double_allowed": True,
+                    "venue_restrictions": ["ALH", "SGH", "Studio"],
+                    "notes": ""
+                }
+                staff_list.append(profile)
+            
+            # Extract Roles
+            roles = ["Usher"]
+            sup = str(row.get('Supervisor', '')).strip()
+            merch = str(row.get('Merch', '')).strip()
+            kiosk = str(row.get('Kiosk', '')).strip()
+            access = str(row.get('Access Host', '')).strip()
+            
+            if "super" in sup.lower(): roles.append("Supervisor")
+            if merch and merch.lower() not in ['no', 'no doesn\'t like', 'nan']: roles.append("Merch")
+            if kiosk and kiosk.lower() not in ['no', 'no doesn\'t like', 'nan']: roles.append("Kiosk")
+            if access and access.lower() not in ['no', 'no doesn\'t like', 'nan']: roles.append("Access Host")
+            
+            profile["roles"] = list(set(roles))
+            
+            # Extract Doubles Preference
+            doubles = str(row.get('Rota Preference\nDoubles', '')).strip()
+            profile["double_allowed"] = False if "no doubles" in doubles.lower() else True
+            
+            # Extract Shift Limits
+            max_amt = str(row.get('Rota Preference\nMax amount', '')).strip()
+            match = re.search(r'max\s*(\d+)', max_amt, re.IGNORECASE)
+            if match:
+                val = int(match.group(1))
+                profile["max_shifts"] = val
+                profile["preferred_shifts"] = min(val, 3)
+            elif "limited" in max_amt.lower():
+                profile["max_shifts"] = 2
+                profile["preferred_shifts"] = 2
+                
+            # Extract Adjustments & Notes
+            notes_parts = []
+            for col in ['No Lifting', 'No Selling', 'Levels / Other Notes', 'Rota Preference\nOther']:
+                val = row.get(col)
+                if pd.notna(val) and str(val).strip() and str(val).strip().lower() != 'nan':
+                    notes_parts.append(str(val).strip())
+            
+            if notes_parts:
+                profile["notes"] = " | ".join(notes_parts)
+                
+            updated_count += 1
+            
+        save_json(STAFF_FILE, staff_list)
+        st.success(f"Successfully fine-tuned and updated **{updated_count}** staff profiles from the Mastersheet!")
+        
+    except Exception as e:
+        st.error(f"An error occurred while processing the Staff Mastersheet: {e}")
+
+st.write("---")
+
+# --- SECTION 4: CURRENT STATUS SUMMARY ---
+st.subheader("📋 System Database Status")
+staff_count = len(load_json(STAFF_FILE))
+show_count = len(load_json(SHOWS_FILE))
+avail_count = len(load_json(AVAILABILITY_FILE))
+rota_count = len(load_json(ROTAS_FILE))
+
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Staff Database", staff_count)
+col2.metric("Scheduled Shows", show_count)
+col3.metric("Availability Entries", avail_count)
+col4.metric("Generated Rotas", rota_count)
