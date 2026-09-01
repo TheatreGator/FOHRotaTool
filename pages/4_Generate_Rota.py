@@ -18,6 +18,26 @@ def load_json(filepath):
     except json.JSONDecodeError:
         return []
 
+def save_rota(show_id, show_name, date, allocation, reserves):
+    rotas_file = "data/rotas.json"
+    rotas = load_json(rotas_file)
+    
+    # Remove older drafts of this same show to avoid duplicates
+    rotas = [r for r in rotas if r['show_id'] != show_id]
+    
+    new_rota = {
+        "show_id": show_id,
+        "show_name": show_name,
+        "date": date,
+        "allocation": allocation,
+        "reserves": reserves,
+        "status": "Draft"
+    }
+    rotas.append(new_rota)
+    
+    with open(rotas_file, "w") as f:
+        json.dump(rotas, f, indent=4)
+
 staff_data = load_json("data/staff.json")
 availability_data = load_json("data/availability.json")
 shows_data = load_json("data/shows.json")
@@ -36,7 +56,6 @@ selected_show_id = st.selectbox("Select Performance to Schedule", options=list(s
 selected_show = next((s for s in shows_data if s['id'] == selected_show_id), None)
 
 def clean_string(text):
-    # Removes all punctuation and double spaces for foolproof matching
     text = re.sub(r'[^\w\s]', '', str(text).lower())
     return " ".join(text.split())
 
@@ -60,7 +79,6 @@ if selected_show:
             clean_target_name = clean_string(selected_show['show_name'])
             
             available_candidates = []
-            debug_log = []
             
             for person in availability_data:
                 for shift_str in person['available_shifts']:
@@ -69,25 +87,13 @@ if selected_show:
                     if exact_date_str in clean_shift and clean_target_name in clean_shift:
                         if person['employee'] in staff_dict: 
                             available_candidates.append(person['employee'])
-                        else:
-                            debug_log.append(f"⚠️ Found {person['employee']} in availability, but they are MISSING from the Staff Database!")
                         break 
             
             if len(available_candidates) == 0:
                 st.error("Found 0 available staff members for this shift.")
-                st.info(f"**Troubleshooting:** The system searched your availability spreadsheet for any shifts containing: \n\n`{exact_date_str}` AND `{clean_target_name}`")
-                if debug_log:
-                    for log in debug_log:
-                        st.warning(log)
                 st.stop()
-            else:
-                st.info(f"**Found {len(available_candidates)} available staff members for this shift.**")
-                if debug_log:
-                    with st.expander("Database Warnings"):
-                        for log in debug_log:
-                            st.write(log)
             
-            # 2. Allocation Engine
+            # Allocation Engine
             allocation = {"Supervisor": [], "Merch": [], "Kiosk": [], "Access Host": [], "Ushers": []}
             remaining_candidates = available_candidates.copy()
             
@@ -128,31 +134,22 @@ if selected_show:
             
             allocation["Ushers"] = allocate_role("Usher", reqs['Ushers'], remaining_candidates)
             
-            st.success("Draft Generated!")
+            # Save the draft
+            save_rota(selected_show['id'], selected_show['show_name'], selected_show['date'], allocation, remaining_candidates)
+            
+            st.success("Draft Generated and Saved! Head to the Rota Editor to make manual tweaks.")
             
             col_left, col_right = st.columns(2)
             
             with col_left:
                 for role in ["Supervisor", "Merch", "Kiosk", "Access Host"]:
                     if reqs.get(role, 0) > 0:
-                        st.write(f"**{role} ({len(allocation[role])}/{reqs[role]})**")
-                        if allocation[role]:
-                            for name in allocation[role]:
-                                st.write(f"- {name}")
-                        else:
-                            st.error(f"Missing {role} - No available trained staff")
+                        st.write(f"**{role}**")
+                        for name in allocation[role]:
+                            st.write(f"- {name}")
                         st.write("")
                         
             with col_right:
-                st.write(f"**Ushers ({len(allocation['Ushers'])}/{reqs['Ushers']})**")
-                if allocation['Ushers']:
-                    for name in allocation['Ushers']:
-                        st.write(f"- {name}")
-                else:
-                    st.error("Missing Ushers - Not enough staff available")
-            
-            st.write("---")
-            if remaining_candidates:
-                with st.expander(f"Available Reserves ({len(remaining_candidates)})"):
-                    for name in remaining_candidates:
-                        st.write(f"- {name}")
+                st.write("**Ushers**")
+                for name in allocation['Ushers']:
+                    st.write(f"- {name}")
