@@ -30,7 +30,6 @@ shows_list = load_shows()
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    # Form to add a new show
     with st.expander("➕ Add Show", expanded=False):
         with st.form("add_show_form"):
             show_name = st.text_input("Show Name", placeholder="e.g. Blood Brothers")
@@ -47,6 +46,7 @@ with col1:
             kiosk_req = st.checkbox("Kiosk Staff Required", value=True)
             access_host = st.checkbox("Access Host Required", value=False)
             notes = st.text_input("Special Requirements")
+            priority_group = st.selectbox("Priority Staff Group", ["None", "Disney Merch", "VIP Hosts", "First Aiders"])
 
             submitted = st.form_submit_button("Save Show")
 
@@ -82,6 +82,8 @@ with col1:
                     "merch_req": merch_req,
                     "kiosk_req": kiosk_req,
                     "access_host": access_host,
+                    "notes": notes,
+                    "priority_group": priority_group,
                     "requirements": {
                         "Supervisor": req_supervisor,
                         "Ushers": req_ushers,
@@ -89,8 +91,7 @@ with col1:
                         "Kiosk": 2 if kiosk_req else 0,
                         "Access Host": 1 if access_host else 0,
                         "Total": total_staff
-                    },
-                    "notes": notes
+                    }
                 }
                 
                 shows_list.append(new_show)
@@ -99,7 +100,6 @@ with col1:
                 st.rerun()
 
 with col2:
-    # Form to edit a show
     if shows_list:
         with st.expander("✏️ Edit Show", expanded=False):
             show_options = {s['id']: f"{s['date']} {s['curtain_time'][:5]} - {s['show_name']} ({s['venue']})" for s in shows_list}
@@ -114,7 +114,6 @@ with col2:
                     current_venue_idx = venue_options.index(edit_target.get("venue", "Alhambra")) if edit_target.get("venue") in venue_options else 0
                     e_venue = st.selectbox("Venue", venue_options, index=current_venue_idx)
                     
-                    # Parse dates back to objects for the inputs
                     current_date = datetime.strptime(edit_target["date"], "%Y-%m-%d").date() if "date" in edit_target else datetime.today().date()
                     current_time = datetime.strptime(edit_target["curtain_time"], "%H:%M:%S").time() if "curtain_time" in edit_target else datetime.now().time()
                     
@@ -123,7 +122,6 @@ with col2:
                     
                     e_audience = st.number_input("Expected Audience", min_value=0, max_value=2000, step=50, value=edit_target.get("audience", 1150))
                     
-                    # Default True for legacy shows that didn't save these specific booleans
                     e_stalls = st.checkbox("Stalls Open", value=edit_target.get("stalls_open", True))
                     e_dc = st.checkbox("Dress Circle Open", value=edit_target.get("dc_open", True))
                     e_uc = st.checkbox("Upper Circle Open", value=edit_target.get("uc_open", True))
@@ -132,10 +130,13 @@ with col2:
                     e_access = st.checkbox("Access Host Required", value=edit_target.get("access_host", False))
                     e_notes = st.text_input("Special Requirements", value=edit_target.get("notes", ""))
                     
+                    p_options = ["None", "Disney Merch", "VIP Hosts", "First Aiders"]
+                    current_p_idx = p_options.index(edit_target.get("priority_group", "None")) if edit_target.get("priority_group") in p_options else 0
+                    e_priority = st.selectbox("Priority Staff Group", p_options, index=current_p_idx)
+                    
                     update_show_submitted = st.form_submit_button("Recalculate & Update Show")
                     
                     if update_show_submitted:
-                        # Recalculate rules
                         req_sup = 1
                         req_ush = 0
                         
@@ -167,6 +168,7 @@ with col2:
                             "kiosk_req": e_kiosk,
                             "access_host": e_access,
                             "notes": e_notes,
+                            "priority_group": e_priority,
                             "requirements": {
                                 "Supervisor": req_sup,
                                 "Ushers": req_ush,
@@ -182,7 +184,6 @@ with col2:
                         st.rerun()
 
 with col3:
-    # Form to delete a show
     if shows_list:
         with st.expander("🗑️ Delete Show", expanded=False):
             to_delete_id = st.selectbox("Select show to remove", options=list(show_options.keys()), format_func=lambda x: show_options[x])
@@ -193,7 +194,6 @@ with col3:
                 st.success("Performance removed successfully!")
                 st.rerun()
 
-# Display current shows
 if shows_list:
     st.write("---")
     st.subheader("Upcoming Programme & Requirements")
@@ -205,13 +205,12 @@ if shows_list:
             "Time": s["curtain_time"][:5], 
             "Show": s["show_name"],
             "Venue": s["venue"],
-            "Audience": s["audience"],
+            "Priority Group": s.get("priority_group", "None"),
             "Supervisor": s["requirements"]["Supervisor"],
             "Ushers": s["requirements"]["Ushers"],
             "Kiosk": s["requirements"]["Kiosk"],
             "Merch": s["requirements"]["Merch"],
-            "Total Required": s["requirements"]["Total"],
-            "Notes": s.get("notes", "")
+            "Total Required": s["requirements"]["Total"]
         }
         display_data.append(flat_record)
         
