@@ -5,13 +5,11 @@ from services.storage import load_staff, save_staff
 st.set_page_config(page_title="Staff Database", layout="wide")
 st.title("Staff Database")
 
-# Load existing data
 staff_list = load_staff()
 
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    # Form to add new staff
     with st.expander("➕ Add Staff", expanded=False):
         with st.form("add_staff_form"):
             name = st.text_input("Full Name")
@@ -20,6 +18,8 @@ with col1:
                                    ["Usher", "Supervisor", "Kiosk", "Merch", "Access Host", "Laidler"])
             venues = st.multiselect("Venue Restrictions", 
                                     ["ALH", "SGH", "Studio"], default=["ALH", "SGH", "Studio"])
+            groups = st.multiselect("Staff Groups (Special Teams)", 
+                                    ["Disney Merch", "VIP Hosts", "First Aiders"])
             
             pref_shifts = st.number_input("Preferred Weekly Shifts", min_value=0, max_value=7, value=3)
             max_shifts = st.number_input("Maximum Weekly Shifts", min_value=0, max_value=7, value=5)
@@ -33,6 +33,7 @@ with col1:
                     "name": name,
                     "active": active,
                     "roles": roles,
+                    "groups": groups,
                     "preferred_shifts": pref_shifts,
                     "max_shifts": max_shifts,
                     "double_allowed": allow_doubles,
@@ -45,7 +46,6 @@ with col1:
                 st.rerun()
 
 with col2:
-    # Form to edit staff
     if staff_list:
         with st.expander("✏️ Edit Staff", expanded=False):
             staff_names = [s["name"] for s in staff_list]
@@ -62,6 +62,9 @@ with col2:
                     e_venues = st.multiselect("Venue Restrictions", 
                                             ["ALH", "SGH", "Studio"], 
                                             default=edit_target.get("venue_restrictions", []))
+                    e_groups = st.multiselect("Staff Groups", 
+                                              ["Disney Merch", "VIP Hosts", "First Aiders"], 
+                                              default=edit_target.get("groups", []))
                     
                     e_pref = st.number_input("Preferred Weekly Shifts", min_value=0, max_value=7, value=edit_target.get("preferred_shifts", 3))
                     e_max = st.number_input("Maximum Weekly Shifts", min_value=0, max_value=7, value=edit_target.get("max_shifts", 5))
@@ -75,6 +78,7 @@ with col2:
                             "name": e_name,
                             "active": e_active,
                             "roles": e_roles,
+                            "groups": e_groups,
                             "preferred_shifts": e_pref,
                             "max_shifts": e_max,
                             "double_allowed": e_doubles,
@@ -86,7 +90,6 @@ with col2:
                         st.rerun()
 
 with col3:
-    # Form to delete staff
     if staff_list:
         with st.expander("🗑️ Delete Staff", expanded=False):
             to_delete = st.selectbox("Select staff to remove", staff_names)
@@ -97,16 +100,16 @@ with col3:
                 st.success(f"{to_delete} has been removed.")
                 st.rerun()
 
-# Display current staff
 if staff_list:
     st.write("---")
     st.subheader("Current Roster")
     df = pd.DataFrame(staff_list)
     df['roles'] = df['roles'].apply(lambda x: ", ".join(x) if isinstance(x, list) else x)
     df['venue_restrictions'] = df['venue_restrictions'].apply(lambda x: ", ".join(x) if isinstance(x, list) else x)
+    df['groups'] = df['groups'].apply(lambda x: ", ".join(x) if isinstance(x, list) else x)
     
     st.dataframe(
-        df[["name", "active", "roles", "preferred_shifts", "max_shifts", "venue_restrictions", "notes"]],
+        df[["name", "active", "roles", "groups", "preferred_shifts", "max_shifts", "venue_restrictions", "notes"]],
         use_container_width=True,
         hide_index=True
     )
