@@ -36,7 +36,6 @@ st.subheader("💾 System State & Backup")
 col_b1, col_b2 = st.columns(2)
 
 with col_b1:
-    # Package all JSON stores into a single backup snapshot
     snapshot = {
         "staff": load_json(STAFF_FILE),
         "availability": load_json(AVAILABILITY_FILE),
@@ -132,13 +131,13 @@ if uploaded_file is not None:
             if new_staff_added > 0:
                 save_json(STAFF_FILE, staff_list)
             
-            # 2. PROCESS SHOWS & ISOLATE CALL TIMES
+            # 2. PROCESS SHOWS & ISOLATE CALL TIMES (WITH UNIQUE INDEXING)
             existing_shows = load_json(SHOWS_FILE)
             existing_show_ids = {s['id'] for s in existing_shows}
             new_shows_added = 0
             parsed_shows_preview = []
             
-            for col in performance_columns:
+            for idx, col in enumerate(performance_columns):
                 col_str = str(col)
                 
                 venue = "Alhambra"
@@ -185,7 +184,8 @@ if uploaded_file is not None:
                 cleaned_name = cleaned_name.replace("–", "-").strip(' \t\n\r&')
                 if not cleaned_name: cleaned_name = "Unknown Show"
 
-                show_id = f"{show_date_str}_{cleaned_name.replace(' ', '')}_{curtain_time}"
+                # Incorporate index `idx` to guarantee zero collisions for back-to-back shows
+                show_id = f"col_{idx}_{show_date_str}_{cleaned_name.replace(' ', '')}_{curtain_time}"
                 
                 audience = 1150 if venue == "Alhambra" else 800
                 req_sup = 1
