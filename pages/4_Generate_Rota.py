@@ -79,6 +79,7 @@ if selected_show:
             clean_target_name = clean_string(selected_show['show_name'])
             
             available_candidates = []
+            debug_log = []
             
             for person in availability_data:
                 for shift_str in person['available_shifts']:
@@ -87,11 +88,23 @@ if selected_show:
                     if exact_date_str in clean_shift and clean_target_name in clean_shift:
                         if person['employee'] in staff_dict: 
                             available_candidates.append(person['employee'])
+                        else:
+                            debug_log.append(f"⚠️ Found {person['employee']} in availability, but they are MISSING from the Staff Database!")
                         break 
             
             if len(available_candidates) == 0:
                 st.error("Found 0 available staff members for this shift.")
+                st.info(f"**Troubleshooting:** The system searched your availability spreadsheet for any shifts containing: \n\n`{exact_date_str}` AND `{clean_target_name}`")
+                if debug_log:
+                    for log in debug_log:
+                        st.warning(log)
                 st.stop()
+            else:
+                st.info(f"**Found {len(available_candidates)} available staff members for this shift.**")
+                if debug_log:
+                    with st.expander("Database Warnings"):
+                        for log in debug_log:
+                            st.write(log)
             
             # Allocation Engine
             allocation = {"Supervisor": [], "Merch": [], "Kiosk": [], "Access Host": [], "Ushers": []}
@@ -144,12 +157,30 @@ if selected_show:
             with col_left:
                 for role in ["Supervisor", "Merch", "Kiosk", "Access Host"]:
                     if reqs.get(role, 0) > 0:
-                        st.write(f"**{role}**")
-                        for name in allocation[role]:
-                            st.write(f"- {name}")
+                        st.write(f"**{role} ({len(allocation.get(role, []))}/{reqs[role]})**")
+                        if allocation.get(role):
+                            for name in allocation[role]:
+                                st.write(f"- {name}")
+                        
+                        # Check if we are short on staff for this role
+                        shortfall = reqs[role] - len(allocation.get(role, []))
+                        if shortfall > 0:
+                            st.error(f"Missing {shortfall} {role}(s) - Check reserves or staff training")
                         st.write("")
                         
             with col_right:
-                st.write("**Ushers**")
-                for name in allocation['Ushers']:
-                    st.write(f"- {name}")
+                st.write(f"**Ushers ({len(allocation.get('Ushers', []))}/{reqs['Ushers']})**")
+                if allocation.get('Ushers'):
+                    for name in allocation['Ushers']:
+                        st.write(f"- {name}")
+                
+                # Check if we are short on ushers
+                usher_shortfall = reqs['Ushers'] - len(allocation.get('Ushers', []))
+                if usher_shortfall > 0:
+                    st.error(f"Missing {usher_shortfall} Usher(s) - Not enough available staff")
+                    
+            st.write("---")
+            if remaining_candidates:
+                with st.expander(f"Available Reserves ({len(remaining_candidates)})"):
+                    for name in remaining_candidates:
+                        st.write(f"- {name}")
