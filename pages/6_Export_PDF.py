@@ -1,16 +1,19 @@
 import streamlit as st
+import pandas as pd
 import json
 import os
-from io import BytesIO
-from datetime import datetime, timedelta
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+import re
+from datetime import datetime
 
-st.set_page_config(page_title="Export PDF", layout="wide")
-st.title("Export Weekly Rota PDF")
-st.write("Generate professional, week-per-page matrix rotas matching your standard format.")
+st.set_page_config(page_title="Import & Data Management", layout="wide")
+st.title("Data Management & Master Importer")
+st.write("Upload your Microsoft Forms export to process data, back up your current workspace, or reset the system.")
+
+AVAILABILITY_FILE = "data/availability.json"
+STAFF_FILE = "data/staff.json"
+SHOWS_FILE = "data/shows.json"
+ROTAS_FILE = "data/rotas.json"
+COMMITMENTS_FILE = "data/commitments.json"
 
 def load_json(filepath):
     if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
@@ -21,142 +24,240 @@ def load_json(filepath):
     except json.JSONDecodeError:
         return []
 
-rotas_data = load_json("data/rotas.json")
-shows_data = load_json("data/shows.json")
-staff_data = load_json("data/staff.json")
+def save_json(filepath, data):
+    directory = os.path.dirname(filepath)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory)
+    with open(filepath, "w") as f:
+        json.dump(data, f, indent=4)
 
-if not rotas_data:
-    st.warning("No generated rotas found. Please create and save some batches first.")
-    st.stop()
+# --- SECTION 1: SYSTEM STATE BACKUP & WIPE ---
+st.subheader("💾 System State & Backup")
+col_b1, col_b2 = st.columns(2)
 
-shows_dict = {s['id']: s for s in shows_data}
-staff_names = sorted([s['name'] for s in staff_data])
-
-def get_monday(date_str):
-    dt = datetime.strptime(date_str, "%Y-%m-%d")
-    monday = dt - timedelta(days=dt.weekday())
-    return monday.strftime("%Y-%m-%d")
-
-weeks_dict = {}
-for rota in rotas_data:
-    date_str = rota['date']
-    monday_str = get_monday(date_str)
-    if monday_str not in weeks_dict:
-        weeks_dict[monday_str] = []
-    weeks_dict[monday_str].append(rota)
-
-st.subheader("Select Weeks to Export")
-selected_weeks = []
-
-for monday_str, rotas_in_week in sorted(weeks_dict.items()):
-    m_dt = datetime.strptime(monday_str, "%Y-%m-%d")
-    sun_dt = m_dt + timedelta(days=6)
-    label = f"Week Commencing: {m_dt.strftime('%d %b %Y')} – {sun_dt.strftime('%d %b %Y')} ({len(rotas_in_week)} performances scheduled)"
+with col_b1:
+    snapshot = {
+        "staff": load_json(STAFF_FILE),
+        "availability": load_json(AVAILABILITY_FILE),
+        "shows": load_json(SHOWS_FILE),
+        "rotas": load_json(ROTAS_FILE),
+        "commitments": load_json(COMMITMENTS_FILE)
+    }
+    snapshot_bytes = json.dumps(snapshot, indent=4).encode('utf-8')
     
-    if st.checkbox(label, value=True, key=f"week_chk_{monday_str}"):
-        selected_weeks.append(monday_str)
+    st.download_button(
+        label="📥 Save / Export Current State (JSON Backup)",
+        data=snapshot_bytes,
+        file_name=f"bradford_foh_backup_{datetime.today().strftime('%Y-%m-%d')}.json",
+        mime="application/json",
+        type="primary"
+    )
 
-if not selected_weeks:
-    st.warning("Please select at least one week to export.")
-    st.stop()
+with col_b2:
+    with st.expander("⚠️ Danger Zone: Wipe All Data"):
+        confirm_wipe = st.checkbox("I understand this will delete all staff records, shows, availability, rotas, and commitments.")
+        if confirm_wipe:
+            if st.button("🗑️ Wipe All System Data", type="primary"):
+                for f_path in [STAFF_FILE, AVAILABILITY_FILE, SHOWS_FILE, ROTAS_FILE, COMMITMENTS_FILE]:
+                    if os.path.exists(f_path):
+                        os.remove(f_path)
+                st.success("All system data has been wiped clean.")
+                st.rerun()
 
-if st.button("📄 Generate Weekly PDF(s)", type="primary"):
-    with st.spinner("Building professional weekly performance matrices..."):
-        buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=15, leftMargin=15, topMargin=15, bottomMargin=15)
-        elements = []
+st.write("---")
+
+# --- SECTION 2: MASTER SPREADSHEET UPLOAD ---
+st.subheader("📊 Master Spreadsheet Importer")
+uploaded_file = st.file_uploader("Upload Microsoft Forms Spreadsheet (.xlsx)", type=["xlsx"])
+
+if uploaded_file is not None:
+    try:
+        df = pd.read_excel(uploaded_file)
         
-        styles = getSampleStyleSheet()
-        title_style = ParagraphStyle('WeekTitle', parent=styles['Heading1'], fontSize=14, leading=18, alignment=1, textColor=colors.HexColor("#1f2937"))
-        cell_style = ParagraphStyle('GridCell', parent=styles['Normal'], fontSize=6.5, leading=8, alignment=1)
-        name_style = ParagraphStyle('StaffName', parent=styles['Normal'], fontSize=7, leading=8.5, fontName='Helvetica-Bold', alignment=0)
-        header_style = ParagraphStyle('HeaderCell', parent=styles['Normal'], fontSize=7.5, leading=9, fontName='Helvetica-Bold', alignment=1, textColor=colors.whitesmoke)
+        if 'Name1' not in df.columns:
+            st.error("Invalid format. Could not find the 'Name1' column from Microsoft Forms.")
+        else:
+            st.success("File uploaded successfully! Running master extraction...")
+            
+            # 1. PROCESS AVAILABILITY & STAFF
+            comments_col = [col for col in df.columns if 'Comments' in col][0]
+            start_idx = df.columns.get_loc(comments_col) + 1
+            performance_columns = df.columns[start_idx:]
+            
+            processed_availability = []
+            staff_list = load_json(STAFF_FILE)
+            existing_staff_names = [str(staff['name']).strip().lower() for staff in staff_list]
+            new_staff_added = 0
+            
+            for index, row in df.iterrows():
+                name = str(row['Name1']).strip()
+                if not name or name == "nan":
+                    continue
+                    
+                comments = str(row[comments_col]).strip() if pd.notna(row[comments_col]) else ""
+                completion_time = str(row.get('Completion time', ''))
+                
+                available_shifts = []
+                for col in performance_columns:
+                    shift_id = " ".join(str(col).split())
+                    if pd.notna(row[col]) and str(row[col]).strip().lower() == 'yes':
+                        available_shifts.append(shift_id)
+                
+                processed_availability.append({
+                    "employee": name,
+                    "completion_time": completion_time,
+                    "comments": comments,
+                    "available_shifts": available_shifts,
+                    "total_available": len(available_shifts)
+                })
+                
+                if name.lower() not in existing_staff_names:
+                    new_profile = {
+                        "name": name,
+                        "active": True,
+                        "roles": ["Usher"],
+                        "groups": [],
+                        "preferred_shifts": 3,
+                        "max_shifts": 5,
+                        "double_allowed": True,
+                        "venue_restrictions": ["ALH", "SGH", "Studio"],
+                        "notes": "Auto-imported from Master Spreadsheet"
+                    }
+                    staff_list.append(new_profile)
+                    existing_staff_names.append(name.lower())
+                    new_staff_added += 1
+            
+            save_json(AVAILABILITY_FILE, processed_availability)
+            if new_staff_added > 0:
+                save_json(STAFF_FILE, staff_list)
+            
+            # 2. PROCESS SHOWS & PARSE ACCURATE PERFORMANCE TIMES
+            existing_shows = load_json(SHOWS_FILE)
+            existing_show_ids = {s['id'] for s in existing_shows}
+            new_shows_added = 0
+            parsed_shows_preview = []
+            
+            for idx, col in enumerate(performance_columns):
+                col_str = str(col)
+                
+                venue = "Alhambra"
+                if "St George's Hall" in col_str or "St George’s Hall" in col_str:
+                    venue = "St George's Hall"
+                elif "Studio" in col_str or "The Studio" in col_str:
+                    venue = "The Studio"
+                
+                # Extract Call Time explicitly
+                call_time = "18:45:00"
+                call_match = re.search(r'Call\s*Time[^\d]*(\d{1,2}:\d{2})', col_str, re.IGNORECASE)
+                if call_match:
+                    ct_str = call_match.group(1)
+                    if len(ct_str) == 5: ct_str += ":00"
+                    call_time = ct_str
+                
+                # Find all times in the header string
+                all_times = re.findall(r'(\d{1,2}:\d{2})', col_str)
+                
+                # Filter out call times or duration times (like 17:30 approx end times)
+                # Usually, performance times appear right near the top of the header.
+                performance_times = []
+                for t in all_times:
+                    t_full = f"{t}:00" if len(t) == 5 else f"0{t}:00"
+                    # Exclude the explicit call time from being considered a curtain time
+                    if t_full != call_time and "approx" not in col_str[col_str.find(t):]:
+                        # Avoid duplicates if regex matches twice
+                        if t_full not in performance_times:
+                            performance_times.append(t_full)
+                
+                if not performance_times:
+                    performance_times = ["19:30:00"]
+                
+                # Extract Date
+                date_match = re.search(r'([0-3]?[0-9])\s+(January|February|March|April|May|June|July|August|September|October|November|December)', col_str, re.IGNORECASE)
+                show_date_str = "2026-04-01"
+                if date_match:
+                    day = date_match.group(1).zfill(2)
+                    month_name = date_match.group(2)
+                    try:
+                        temp_dt = datetime.strptime(f"{day} {month_name} 2026", "%d %B %Y")
+                        show_date_str = temp_dt.strftime("%Y-%m-%d")
+                    except:
+                        pass
+                
+                # Clean Show Name
+                cleaned_name = col_str.split('\n')[0]
+                cleaned_name = cleaned_name.replace("Alhambra", "").replace("St George's Hall", "").replace("The Studio", "")
+                cleaned_name = re.sub(r'^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+[0-3]?[0-9]\s+\w+\s+(\d{1,2}:\d{2}\s*(&\s*\d{1,2}:\d{2})?)?', '', cleaned_name).strip()
+                cleaned_name = re.sub(r'\b\d{1,2}:\d{2}\b', '', cleaned_name).strip()
+                cleaned_name = cleaned_name.replace("–", "-").strip(' \t\n\r&')
+                if not cleaned_name: cleaned_name = "Unknown Show"
 
-        for w_idx, monday_str in enumerate(selected_weeks):
-            m_dt = datetime.strptime(monday_str, "%Y-%m-%d")
-            week_rotas = weeks_dict[monday_str]
-            
-            # Sort performances chronologically by date and curtain time
-            week_rotas.sort(key=lambda x: (x['date'], x['curtain_time']))
-            
-            # Each performance gets its own discrete column side-by-side
-            dates_row = ["Staff Name"]
-            venues_row = ["Venue"]
-            shows_row = ["Show"]
-            times_row = ["Perf Time"]
-            
-            for r in week_rotas:
-                r_dt = datetime.strptime(r['date'], "%Y-%m-%d")
-                show_info = shows_dict.get(r['show_id'], {})
-                venue = show_info.get('venue', 'Alhambra')
-                time = show_info.get('curtain_time', '')[:5]
+                audience = 1150 if venue == "Alhambra" else 800
+                req_sup = 1
+                req_ush = 6 if venue == "Alhambra" else 4
                 
-                dates_row.append(r_dt.strftime("%a %d %b"))
-                venues_row.append(venue)
-                shows_row.append(r['show_name'])
-                times_row.append(time)
+                # If there are multiple performance times found in a single header column (e.g. "14:00 & 16:00"), 
+                # create a separate show record for EACH time so they appear cleanly side-by-side on the rota!
+                for p_idx, curtain_time in enumerate(performance_times):
+                    show_id = f"col_{idx}_p{p_idx}_{show_date_str}_{cleaned_name.replace(' ', '')}_{curtain_time}"
+                    
+                    show_record = {
+                        "id": show_id,
+                        "show_name": cleaned_name,
+                        "venue": venue,
+                        "date": show_date_str,
+                        "curtain_time": curtain_time,
+                        "call_time": call_time,
+                        "audience": audience,
+                        "stalls_open": True,
+                        "dc_open": True,
+                        "uc_open": True,
+                        "merch_req": True,
+                        "kiosk_req": True,
+                        "access_host": False,
+                        "notes": f"Call Time: {call_time[:5]}",
+                        "priority_group": "None",
+                        "requirements": {
+                            "Supervisor": req_sup,
+                            "Ushers": req_ush,
+                            "Merch": 1,
+                            "Kiosk": 2,
+                            "Access Host": 0,
+                            "Total": req_sup + req_ush + 3
+                        }
+                    }
+                    
+                    parsed_shows_preview.append(show_record)
+                    
+                    if show_id not in existing_show_ids:
+                        existing_shows.append(show_record)
+                        existing_show_ids.add(show_id)
+                        new_shows_added += 1
             
-            num_cols = len(week_rotas)
+            save_json(SHOWS_FILE, existing_shows)
             
-            # Construct table header rows
-            table_data = [
-                [Paragraph(f"<b>BRADFORD THEATRES - FOH ROTA (W/C {m_dt.strftime('%d %B %Y')})</b>", title_style)] + [""] * num_cols,
-                [Paragraph(h, header_style) for h in dates_row],
-                [Paragraph(v, header_style) for v in venues_row],
-                [Paragraph(s, header_style) for s in shows_row],
-                [Paragraph(t, header_style) for t in times_row]
-            ]
+            st.success("Master Import Complete!")
             
-            # Populate staff allocations per performance column
-            for staff in staff_names:
-                row = [Paragraph(staff, name_style)]
-                for r in week_rotas:
-                    alloc = r.get('allocation', {})
-                    assigned_roles = []
-                    for role, members in alloc.items():
-                        if staff in members:
-                            show_info = shows_dict.get(r['show_id'], {})
-                            call_t = show_info.get('call_time', '18:45:00')[:5]
-                            role_short = role[:5]
-                            assigned_roles.append(f"{call_t} {role_short}")
-                            
-                    if assigned_roles:
-                        row.append(Paragraph("<br/>".join(assigned_roles), cell_style))
-                    else:
-                        row.append(Paragraph("", cell_style))
-                table_data.append(row)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Submissions Processed", len(processed_availability))
+            c2.metric("New Staff Added", new_staff_added)
+            c3.metric("Shows Extracted", len(parsed_shows_preview))
+            c4.metric("New Shows Added", new_shows_added)
             
-            # Dynamic column widths to comfortably fit landscape A4
-            usable_width = 812
-            name_col_width = 85
-            remaining_width = usable_width - name_col_width
-            perf_col_width = max(40, remaining_width / num_cols) if num_cols > 0 else 50
-            col_widths = [name_col_width] + [perf_col_width] * num_cols
+            st.subheader("Extracted Programme Preview")
+            df_preview = pd.DataFrame(parsed_shows_preview)
+            st.dataframe(df_preview[["date", "curtain_time", "call_time", "show_name", "venue"]], use_container_width=True, hide_index=True)
             
-            t = Table(table_data, colWidths=col_widths, repeatRows=5)
-            t.setStyle(TableStyle([
-                ('SPAN', (0, 0), (-1, 0)),
-                ('BACKGROUND', (0, 1), (-1, 1), colors.HexColor("#1f2937")), # Dates header
-                ('BACKGROUND', (0, 2), (-1, 2), colors.HexColor("#374151")), # Venues header
-                ('BACKGROUND', (0, 3), (-1, 3), colors.HexColor("#4b5563")), # Shows header
-                ('BACKGROUND', (0, 4), (-1, 4), colors.HexColor("#6b7280")), # Times header
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ('GRID', (0, 1), (-1, -1), 0.5, colors.HexColor("#d1d5db")),
-                ('TOPPADDING', (0, 0), (-1, -1), 2.5),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 2.5),
-            ]))
-            
-            elements.append(t)
-            if w_idx < len(selected_weeks) - 1:
-                elements.append(PageBreak())
-                
-        doc.build(elements)
-        st.success("Weekly Performance Matrix PDF Generated Successfully!")
-        st.download_button(
-            label="⬇️ Download Weekly Rota PDF",
-            data=buffer.getvalue(),
-            file_name="Bradford_FoH_Weekly_Rotas.pdf",
-            mime="application/pdf",
-            type="primary"
-        )
+    except Exception as e:
+        st.error(f"An error occurred while processing the master file: {e}")
+else:
+    st.write("### Currently Loaded Status")
+    staff_count = len(load_json(STAFF_FILE))
+    show_count = len(load_json(SHOWS_FILE))
+    avail_count = len(load_json(AVAILABILITY_FILE))
+    rota_count = len(load_json(ROTAS_FILE))
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Staff Database", staff_count)
+    col2.metric("Scheduled Shows", show_count)
+    col3.metric("Availability Entries", avail_count)
+    col4.metric("Generated Rotas", rota_count)
