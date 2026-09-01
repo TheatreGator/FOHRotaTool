@@ -7,6 +7,11 @@ st.title("Staff Database")
 
 staff_list = load_staff()
 
+# Safety patch: ensure all loaded records have the 'groups' key to prevent KeyErrors with old JSON data
+for staff in staff_list:
+    if "groups" not in staff:
+        staff["groups"] = []
+
 col1, col2, col3 = st.columns(3)
 
 with col1:
