@@ -247,11 +247,9 @@ if staff_master_file is not None:
                 continue
             name = str(name_raw).strip()
             
-            # Find matching staff profile by name (case-insensitive)
             profile = next((s for s in staff_list if str(s.get('name', '')).strip().lower() == name.lower()), None)
             
             if not profile:
-                # If staff member doesn't exist yet, create a new profile
                 profile = {
                     "name": name,
                     "active": True,
@@ -283,16 +281,26 @@ if staff_master_file is not None:
             doubles = str(row.get('Rota Preference\nDoubles', '')).strip()
             profile["double_allowed"] = False if "no doubles" in doubles.lower() else True
             
-            # Extract Shift Limits
-            max_amt = str(row.get('Rota Preference\nMax amount', '')).strip()
-            match = re.search(r'max\s*(\d+)', max_amt, re.IGNORECASE)
-            if match:
-                val = int(match.group(1))
-                profile["max_shifts"] = val
-                profile["preferred_shifts"] = min(val, 3)
-            elif "limited" in max_amt.lower():
-                profile["max_shifts"] = 2
-                profile["preferred_shifts"] = 2
+            # Extract Shift Limits & Handle AMAP ("As Many As Possible")
+            max_amt = str(row.get('Rota Preference\nMax amount', '')).strip().upper()
+            if "AMAP" in max_amt:
+                profile["max_shifts"] = 7
+                profile["preferred_shifts"] = 5
+            else:
+                match = re.search(r'max\s*(\d+)', max_amt, re.IGNORECASE)
+                if match:
+                    val = int(match.group(1))
+                    profile["max_shifts"] = val
+                    profile["preferred_shifts"] = min(val, 3)
+                elif "limited" in max_amt.lower() or "2" in max_amt:
+                    profile["max_shifts"] = 2
+                    profile["preferred_shifts"] = 2
+                elif "3" in max_amt:
+                    profile["max_shifts"] = 3
+                    profile["preferred_shifts"] = 3
+                elif "4" in max_amt:
+                    profile["max_shifts"] = 4
+                    profile["preferred_shifts"] = 3
                 
             # Extract Adjustments & Notes
             notes_parts = []
@@ -307,7 +315,7 @@ if staff_master_file is not None:
             updated_count += 1
             
         save_json(STAFF_FILE, staff_list)
-        st.success(f"Successfully fine-tuned and updated **{updated_count}** staff profiles from the Mastersheet!")
+        st.success(f"Successfully fine-tuned and updated **{updated_count}** staff profiles from the Mastersheet (AMAP processed as maximum capacity)!")
         
     except Exception as e:
         st.error(f"An error occurred while processing the Staff Mastersheet: {e}")
