@@ -131,7 +131,7 @@ if uploaded_file is not None:
             if new_staff_added > 0:
                 save_json(STAFF_FILE, staff_list)
             
-            # 2. PROCESS SHOWS & ISOLATE CALL TIMES (WITH UNIQUE INDEXING)
+            # 2. PROCESS SHOWS & PARSE ACCURATE PERFORMANCE TIMES
             existing_shows = load_json(SHOWS_FILE)
             existing_show_ids = {s['id'] for s in existing_shows}
             new_shows_added = 0
@@ -146,26 +146,32 @@ if uploaded_file is not None:
                 elif "Studio" in col_str or "The Studio" in col_str:
                     venue = "The Studio"
                 
-                all_times = re.findall(r'\b(0?[1-9]|1[0-2]|2[0-3]):([0-5][0-9])\b', col_str)
-                
-                curtain_time = "19:30:00"
+                # Extract Call Time explicitly
                 call_time = "18:45:00"
-                
                 call_match = re.search(r'Call\s*Time[^\d]*(\d{1,2}:\d{2})', col_str, re.IGNORECASE)
                 if call_match:
-                    call_time_extracted = call_match.group(1)
-                    if len(call_time_extracted) == 5: call_time_extracted += ":00"
-                    call_time = call_time_extracted
+                    ct_str = call_match.group(1)
+                    if len(ct_str) == 5: ct_str += ":00"
+                    call_time = ct_str
                 
-                valid_curtain_times = []
-                for match in all_times:
-                    t_str = f"{match[0].zfill(2)}:{match[1]}:00"
-                    if t_str != call_time:
-                        valid_curtain_times.append(t_str)
+                # Find all times in the header string
+                all_times = re.findall(r'(\d{1,2}:\d{2})', col_str)
                 
-                if valid_curtain_times:
-                    curtain_time = valid_curtain_times[0]
+                # Filter out call times or duration times (like 17:30 approx end times)
+                # Usually, performance times appear right near the top of the header.
+                performance_times = []
+                for t in all_times:
+                    t_full = f"{t}:00" if len(t) == 5 else f"0{t}:00"
+                    # Exclude the explicit call time from being considered a curtain time
+                    if t_full != call_time and "approx" not in col_str[col_str.find(t):]:
+                        # Avoid duplicates if regex matches twice
+                        if t_full not in performance_times:
+                            performance_times.append(t_full)
                 
+                if not performance_times:
+                    performance_times = ["19:30:00"]
+                
+                # Extract Date
                 date_match = re.search(r'([0-3]?[0-9])\s+(January|February|March|April|May|June|July|August|September|October|November|December)', col_str, re.IGNORECASE)
                 show_date_str = "2026-04-01"
                 if date_match:
@@ -177,6 +183,7 @@ if uploaded_file is not None:
                     except:
                         pass
                 
+                # Clean Show Name
                 cleaned_name = col_str.split('\n')[0]
                 cleaned_name = cleaned_name.replace("Alhambra", "").replace("St George's Hall", "").replace("The Studio", "")
                 cleaned_name = re.sub(r'^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+[0-3]?[0-9]\s+\w+\s+(\d{1,2}:\d{2}\s*(&\s*\d{1,2}:\d{2})?)?', '', cleaned_name).strip()
@@ -184,45 +191,47 @@ if uploaded_file is not None:
                 cleaned_name = cleaned_name.replace("–", "-").strip(' \t\n\r&')
                 if not cleaned_name: cleaned_name = "Unknown Show"
 
-                # Incorporate index `idx` to guarantee zero collisions for back-to-back shows
-                show_id = f"col_{idx}_{show_date_str}_{cleaned_name.replace(' ', '')}_{curtain_time}"
-                
                 audience = 1150 if venue == "Alhambra" else 800
                 req_sup = 1
                 req_ush = 6 if venue == "Alhambra" else 4
                 
-                show_record = {
-                    "id": show_id,
-                    "show_name": cleaned_name,
-                    "venue": venue,
-                    "date": show_date_str,
-                    "curtain_time": curtain_time,
-                    "call_time": call_time,
-                    "audience": audience,
-                    "stalls_open": True,
-                    "dc_open": True,
-                    "uc_open": True,
-                    "merch_req": True,
-                    "kiosk_req": True,
-                    "access_host": False,
-                    "notes": f"Call Time: {call_time[:5]}",
-                    "priority_group": "None",
-                    "requirements": {
-                        "Supervisor": req_sup,
-                        "Ushers": req_ush,
-                        "Merch": 1,
-                        "Kiosk": 2,
-                        "Access Host": 0,
-                        "Total": req_sup + req_ush + 3
+                # If there are multiple performance times found in a single header column (e.g. "14:00 & 16:00"), 
+                # create a separate show record for EACH time so they appear cleanly side-by-side on the rota!
+                for p_idx, curtain_time in enumerate(performance_times):
+                    show_id = f"col_{idx}_p{p_idx}_{show_date_str}_{cleaned_name.replace(' ', '')}_{curtain_time}"
+                    
+                    show_record = {
+                        "id": show_id,
+                        "show_name": cleaned_name,
+                        "venue": venue,
+                        "date": show_date_str,
+                        "curtain_time": curtain_time,
+                        "call_time": call_time,
+                        "audience": audience,
+                        "stalls_open": True,
+                        "dc_open": True,
+                        "uc_open": True,
+                        "merch_req": True,
+                        "kiosk_req": True,
+                        "access_host": False,
+                        "notes": f"Call Time: {call_time[:5]}",
+                        "priority_group": "None",
+                        "requirements": {
+                            "Supervisor": req_sup,
+                            "Ushers": req_ush,
+                            "Merch": 1,
+                            "Kiosk": 2,
+                            "Access Host": 0,
+                            "Total": req_sup + req_ush + 3
+                        }
                     }
-                }
-                
-                parsed_shows_preview.append(show_record)
-                
-                if show_id not in existing_show_ids:
-                    existing_shows.append(show_record)
-                    existing_show_ids.add(show_id)
-                    new_shows_added += 1
+                    
+                    parsed_shows_preview.append(show_record)
+                    
+                    if show_id not in existing_show_ids:
+                        existing_shows.append(show_record)
+                        existing_show_ids.add(show_id)
+                        new_shows_added += 1
             
             save_json(SHOWS_FILE, existing_shows)
             
